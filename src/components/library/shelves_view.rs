@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::invoke;
+use crate::reading::SeriesProgress;
 use crate::state::{matches_search, AppContext, Availability, ContextMenuState, ContextMenuTarget};
 use crate::types::ComicBook;
 
@@ -72,7 +73,7 @@ pub fn ShelvesView() -> impl IntoView {
                     <div class="comic-grid title-grid">
                         <For
                             each=move || series_list.get()
-                            key=|(series, comics)| (series.clone(), comics.iter().map(|c| (c.id.clone(), c.path.clone(), c.title.clone(), c.downloaded)).collect::<Vec<_>>())
+                            key=|(series, comics)| (series.clone(), comics.iter().map(|c| (c.id.clone(), c.path.clone(), c.title.clone(), c.downloaded, c.reading.clone())).collect::<Vec<_>>())
                             children=move |(series, comics)| view! {
                                 <SeriesCard series=series comics=comics />
                             }
@@ -89,6 +90,7 @@ pub fn ShelvesView() -> impl IntoView {
 fn SeriesCard(series: String, comics: Vec<ComicBook>) -> impl IntoView {
     let ctx = use_context::<AppContext>().unwrap();
     let count = comics.len();
+    let progress = SeriesProgress::from_books(&comics);
     let issue_label = if count == 1 {
         "1 book".to_string()
     } else {
@@ -169,6 +171,8 @@ fn SeriesCard(series: String, comics: Vec<ComicBook>) -> impl IntoView {
                     <span class="comic-title">{series_sv.get_value()}</span>
                     <span class="comic-format">{issue_label}</span>
                     <span class="series-availability" class:offline=(downloaded > 0)>{availability}</span>
+                    <span class="series-reading-label">{progress.label()}</span>
+                    <progress class="series-reading-progress" aria-label=format!("Reading progress for {series}") max=progress.total value=progress.completed></progress>
                 </span>
                 <span class="series-browse-arrow" aria-hidden="true">"→"</span>
             </button>
@@ -193,6 +197,7 @@ mod tests {
             format: ComicFormat::Cbz,
             page_count: None,
             downloaded: false,
+            reading: Default::default(),
         };
         let books = vec![
             comic("Saga 1", "Saga"),

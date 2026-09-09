@@ -30,7 +30,7 @@ pub async fn scan_directory(
     absorb(&state, &root, comics).await;
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Rescan every folder the library already draws from.
@@ -47,7 +47,7 @@ pub async fn refresh_library(state: State<'_, AppState>) -> Result<Vec<ComicBook
     }
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Walk one directory for comics, off the async runtime.
@@ -109,7 +109,7 @@ fn outermost(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[tauri::command]
 pub async fn get_library(state: State<'_, AppState>) -> Result<Vec<ComicBook>, String> {
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 #[tauri::command]
@@ -173,7 +173,7 @@ pub async fn pick_files(
     }
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Order by series, then chapter/issue number across different filename styles.
@@ -184,11 +184,18 @@ pub fn compare_comics(a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
 }
 
 /// The whole library, sorted for display.
-async fn snapshot(state: &AppState) -> Vec<ComicBook> {
+async fn catalog_snapshot(state: &AppState) -> Vec<ComicBook> {
     let mut comics: Vec<ComicBook> = state.library.read().await.values().cloned().collect();
     regroup(&mut comics);
     comics.sort_by(compare_comics);
     comics
+}
+
+async fn snapshot(state: &AppState) -> Result<Vec<ComicBook>, String> {
+    let cache = state.cache.lock().await;
+    let mut comics = catalog_snapshot(state).await;
+    cache.apply_reading_progress(&mut comics).map_err(|e| e.to_string())?;
+    Ok(comics)
 }
 
 /// Write the library to the cache DB. Best-effort: the filesystem is the real
@@ -201,7 +208,7 @@ pub(crate) async fn persist(state: &AppState) {
 
 pub(crate) async fn persist_checked(state: &AppState) -> Result<(), String> {
     let cache = state.cache.lock().await;
-    let comics = snapshot(state).await;
+    let comics = catalog_snapshot(state).await;
     cache.save_comics(&comics).map_err(|e| e.to_string())
 }
 
@@ -252,6 +259,7 @@ fn make_comic_book(path: &Path) -> anyhow::Result<ComicBook> {
         modified,
         drive_file_id: None,
         downloaded: true,
+        reading: Default::default(),
         series_hint,
     })
 }
@@ -273,6 +281,7 @@ mod tests {
             modified: 0,
             drive_file_id: None,
             downloaded: true,
+            reading: Default::default(),
             series_hint: None,
         }
     }

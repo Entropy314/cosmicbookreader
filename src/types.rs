@@ -36,6 +36,25 @@ pub enum ComicFormat {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadingStatus {
+    #[default]
+    Unread,
+    Reading,
+    Completed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadingProgress {
+    pub status: ReadingStatus,
+    /// The last successfully displayed page, indexed from zero.
+    pub last_page: Option<u32>,
+    /// Unix time in milliseconds; zero for an unread book.
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComicBook {
     pub id: String,
@@ -45,6 +64,8 @@ pub struct ComicBook {
     pub format: ComicFormat,
     pub page_count: Option<u32>,
     pub downloaded: bool,
+    #[serde(default)]
+    pub reading: ReadingProgress,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

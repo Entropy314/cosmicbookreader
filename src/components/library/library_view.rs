@@ -2,6 +2,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::invoke;
+use crate::reading::reading_target;
+use crate::types::ReadingStatus;
 use crate::state::{matches_search, save_directory, AppContext, Availability, ViewMode};
 
 use super::comic_card::BookList;
@@ -23,8 +25,12 @@ pub fn LibraryView() -> impl IntoView {
     });
     let resume = Memo::new(move |_| {
         let id = ctx.last_opened.get();
-        ctx.library
-            .with(|books| books.iter().find(|c| Some(&c.id) == id.as_ref()).cloned())
+        ctx.library.with(|books| {
+            let recent = books.iter().find(|c| Some(&c.id) == id.as_ref()).or_else(||
+                books.iter().filter(|c| c.reading.updated_at > 0).max_by_key(|c| c.reading.updated_at))?;
+            let series: Vec<_> = books.iter().filter(|c| c.series == recent.series).cloned().collect();
+            reading_target(&series).cloned()
+        })
     });
     let keyboard = window_event_listener(leptos::ev::keydown, move |e| {
         if event_target::<web_sys::Element>(&e)
@@ -142,8 +148,8 @@ pub fn LibraryView() -> impl IntoView {
                 {move || resume.get().map(|book| view! {
                     <a class="continue-reading" href=format!("/read/{}", book.id)>
                         <span class="continue-symbol" aria-hidden="true">"↗"</span>
-                        <span><strong>"Continue reading"</strong><span>{book.title}</span></span>
-                        <span class="continue-action">"Resume →"</span>
+                        <span><strong>{if book.reading.status == ReadingStatus::Reading { "Continue reading" } else { "Read next unread" }}</strong><span>{book.title}</span></span>
+                        <span class="continue-action">{if book.reading.status == ReadingStatus::Reading { "Resume →" } else { "Read →" }}</span>
                     </a>
                 })}
             </Show>

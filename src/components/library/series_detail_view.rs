@@ -1,4 +1,6 @@
 use super::comic_card::BookList;
+use crate::reading::{SeriesProgress, next_unread, reading_target};
+use crate::types::ReadingStatus;
 use crate::state::{matches_search, AppContext};
 use leptos::prelude::*;
 
@@ -23,25 +25,9 @@ pub fn SeriesDetailView(series: String) -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let resume = Memo::new(move |_| {
-        visible.with(|books| {
-            let last = ctx.last_opened.get();
-            books
-                .iter()
-                .find(|c| {
-                    Some(&c.id) == last.as_ref() && (c.downloaded || c.id.starts_with("drive-"))
-                })
-                .cloned()
-        })
-    });
-    let first = Memo::new(move |_| {
-        visible.with(|books| {
-            books
-                .iter()
-                .find(|c| c.downloaded || c.id.starts_with("drive-"))
-                .cloned()
-        })
-    });
+    let progress = Memo::new(move |_| all_books.with(|books| SeriesProgress::from_books(books)));
+    let target = Memo::new(move |_| visible.with(|books| reading_target(books).cloned()));
+    let unread = Memo::new(move |_| visible.with(|books| next_unread(books).cloned()));
     let on_back = move |_| {
         ctx.selected_comics.update(|s| s.clear());
         ctx.series_query.set(String::new());
@@ -64,13 +50,23 @@ pub fn SeriesDetailView(series: String) -> impl IntoView {
                             else { format!("{total} books · {offline} available offline") }
                         }}</p>
                     </div>
-                    <Show when=move || first.get().is_some()>
-                        <a class="btn-primary" href=move || resume.get().or_else(|| first.get()).map(|book| format!("/read/{}", book.id))>
-                            {move || if resume.get().is_some() { "Continue reading →" }
-                                else if first.get().map(|c| c.id) == all_books.with(|books| books.first().map(|c| c.id.clone())) { "Read from the start →" }
-                                else { "Read first result →" }}
-                        </a>
-                    </Show>
+                    <div class="series-reading-actions">
+                        <Show when=move || target.get().is_some()>
+                            <a class="btn-primary" href=move || target.get().map(|book| format!("/read/{}", book.id))>
+                                {move || if target.get().is_some_and(|b| b.reading.status == ReadingStatus::Reading) { "Continue reading →" } else { "Read next unread →" }}
+                            </a>
+                        </Show>
+                        <Show when=move || target.get().is_some_and(|b| b.reading.status == ReadingStatus::Reading) && unread.get().is_some()>
+                            <a class="btn-secondary" href=move || unread.get().map(|book| format!("/read/{}", book.id))>"Read next unread →"</a>
+                        </Show>
+                        <Show when=move || progress.with(|p| p.total > 0 && p.completed == p.total)>
+                            <span class="all-read">"✓ All books completed"</span>
+                        </Show>
+                    </div>
+                </div>
+                <div class="series-progress-summary">
+                    <span>{move || progress.get().label()}</span>
+                    <progress aria-label="Completed books in this title" max=move || progress.get().total value=move || progress.get().completed></progress>
                 </div>
                 <p class="collection-hint">"Choose a book below. Books on Drive download when opened."</p>
             </div>

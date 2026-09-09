@@ -2,7 +2,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::invoke;
-use crate::state::{load_setting, save_setting};
+use crate::state::{load_setting, save_setting, AppContext};
+use std::sync::{Arc, Mutex};
 use crate::types::{OpenComicResult, PageData};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,6 +53,12 @@ impl FitMode {
     }
 }
 
+#[derive(Default)]
+struct ProgressQueue {
+    pending: std::collections::VecDeque<u32>,
+    running: bool,
+}
+
 #[derive(Clone, Copy)]
 pub struct ReaderState {
     pub current_page: RwSignal<u32>,
@@ -59,6 +66,10 @@ pub struct ReaderState {
     pub page_data: RwSignal<Option<PageData>>,
     pub is_loading: RwSignal<bool>,
     pub error: RwSignal<Option<String>>,
+    pub progress_error: RwSignal<Option<String>>,
+    page_request: RwSignal<u64>,
+    progress_queue: StoredValue<Arc<Mutex<ProgressQueue>>>,
+    app: AppContext,
     pub fit_mode: RwSignal<FitMode>,
     pub zoom: RwSignal<f64>,
     pub toolbar_visible: RwSignal<bool>,
@@ -85,9 +96,12 @@ impl ReaderState {
     }
 
     pub fn go_to_page(&self, page: u32) {
+        if page >= self.page_count.get_untracked() { return; }
+        let request = self.page_request.get_untracked().wrapping_add(1);
+        self.page_request.set(request);
         self.current_page.set(page);
+        self.error.set(None);
 
-        // The next page is usually already in hand - show it immediately.
         if let Some(data) = self.prefetch.get_untracked().filter(|d| d.index == page) {
             self.prefetch.set(None);
             self.page_data.set(Some(data));
@@ -97,42 +111,77 @@ impl ReaderState {
         }
 
         let id = self.comic_id.get_value();
-        let (page_data, is_loading, error) = (self.page_data, self.is_loading, self.error);
         let state = *self;
-        is_loading.set(true);
-
+        self.is_loading.set(true);
         spawn_local(async move {
-            match invoke::get_page(&id, page).await {
-                Ok(data) => page_data.set(Some(data)),
-                Err(e) => error.set(Some(e)),
+            let result = invoke::get_page(&id, page).await;
+            if state.page_request.try_get_untracked() != Some(request) { return; }
+            match result {
+                Ok(data) => {
+                    state.page_data.set(Some(data));
+                    state.record_and_prefetch(page);
+                }
+                Err(e) => {
+                    // A failed or superseded request must never advance progress.
+                    if let Some(previous) = state.page_data.get_untracked() { state.current_page.set(previous.index); }
+                    state.error.set(Some(e));
+                }
             }
-            is_loading.set(false);
-            state.record_and_prefetch(page);
+            state.is_loading.set(false);
         });
     }
 
-    /// Save the position, then warm the following page so the next turn is
-    /// instant. Reading is overwhelmingly forward, so one page of lookahead
-    /// covers almost every turn.
+    /// Serialize saves and keep the latest queued page even after leaving the
+    /// route, so rapid page turns cannot overwrite a newer saved position.
     fn record_and_prefetch(&self, page: u32) {
+        let queue = self.progress_queue.get_value();
+        let start = {
+            let mut queue = queue.lock().unwrap();
+            queue.pending.push_back(page);
+            if queue.running { false } else { queue.running = true; true }
+        };
         let id = self.comic_id.get_value();
-        let slot = self.prefetch;
-        let next = (page + 1 < self.page_count.get_untracked()).then_some(page + 1);
-
-        spawn_local(async move {
-            // Saved on every turn: leaving via Esc, the back button, or a crash
-            // should all keep the position.
-            let _ = invoke::save_progress(&id, page).await;
-
-            match next {
-                Some(next) => {
-                    if let Ok(data) = invoke::get_page(&id, next).await {
-                        slot.set(Some(data));
+        let total = self.page_count.get_untracked();
+        if start {
+            let app = self.app;
+            let error = self.progress_error;
+            let id = id.clone();
+            spawn_local(async move {
+                loop {
+                    let page = {
+                        let mut queue = queue.lock().unwrap();
+                        match queue.pending.pop_front() {
+                            Some(page) => page,
+                            None => { queue.running = false; break; }
+                        }
+                    };
+                    match invoke::save_progress(&id, page).await {
+                        Ok(reading) => {
+                            app.library.update(|books| {
+                                if let Some(book) = books.iter_mut().find(|book| book.id == id) {
+                                    if reading.updated_at >= book.reading.updated_at {
+                                        book.reading = reading;
+                                        book.page_count = Some(total);
+                                    }
+                                }
+                            });
+                            let _ = error.try_set(None);
+                        }
+                        Err(message) => { let _ = error.try_set(Some(message)); }
                     }
                 }
-                None => slot.set(None),
-            }
-        });
+            });
+        }
+        let slot = self.prefetch;
+        if page + 1 < total {
+            spawn_local(async move {
+                if let Ok(data) = invoke::get_page(&id, page + 1).await { let _ = slot.try_set(Some(data)); }
+            });
+        } else { slot.set(None); }
+    }
+
+    pub fn retry_progress(&self) {
+        if let Some(page) = self.page_data.get_untracked() { self.record_and_prefetch(page.index); }
     }
 
     pub fn zoom_in(&self) {
@@ -172,6 +221,10 @@ pub fn use_comic_reader(comic_id: String) -> ReaderState {
         page_data: RwSignal::new(None),
         is_loading: RwSignal::new(true),
         error: RwSignal::new(None),
+        progress_error: RwSignal::new(None),
+        page_request: RwSignal::new(0),
+        progress_queue: StoredValue::new(Arc::new(Mutex::new(ProgressQueue::default()))),
+        app: use_context::<AppContext>().unwrap(),
         fit_mode: RwSignal::new(
             load_setting("fit_mode").map_or(FitMode::FitPage, |k| FitMode::from_key(&k)),
         ),
@@ -202,7 +255,14 @@ pub fn use_comic_reader(comic_id: String) -> ReaderState {
             return;
         }
         match result {
-            Ok(OpenComicResult { page_count, page, .. }) => {
+            Ok(OpenComicResult { comic, page_count, page }) => {
+                state.app.library.update(|books| {
+                    if let Some(book) = books.iter_mut().find(|book| book.id == id) {
+                        book.page_count = Some(page_count);
+                        book.downloaded = comic.downloaded;
+                        book.reading = comic.reading;
+                    }
+                });
                 let index = page.index;
                 state.page_count.set(page_count);
                 state.current_page.set(index);

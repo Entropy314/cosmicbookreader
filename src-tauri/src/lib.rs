@@ -57,6 +57,7 @@ pub fn run() {
             commands::reader::get_page,
             commands::reader::close_comic,
             commands::reader::save_progress,
+            commands::reader::set_reading_status,
             commands::reader::toggle_fullscreen,
         ])
         .run(tauri::generate_context!())

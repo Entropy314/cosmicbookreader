@@ -203,6 +203,7 @@ fn comic_from_drive(file: &api::DriveFile, downloads: &Path) -> Result<ComicBook
         modified: version,
         drive_file_id: Some(file.id.clone()),
         downloaded: false,
+        reading: Default::default(),
         series_hint,
     })
 }
@@ -290,6 +291,7 @@ pub async fn ensure_downloaded(state: &AppState, comic: ComicBook) -> Result<Com
     if locally_available(&comic).await {
         return Ok(ComicBook {
             downloaded: true,
+            reading: Default::default(),
             ..comic
         });
     }
@@ -306,6 +308,7 @@ pub async fn ensure_downloaded(state: &AppState, comic: ComicBook) -> Result<Com
     if locally_available(&comic).await {
         return Ok(ComicBook {
             downloaded: true,
+            reading: Default::default(),
             ..comic
         });
     }
