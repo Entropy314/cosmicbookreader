@@ -93,7 +93,7 @@ pub async fn toggle_fullscreen() -> Result<bool, String> {
     call("toggle_fullscreen", &Args {}).await
 }
 
-pub async fn save_progress(comic_id: &str, page: u32) -> Result<(), String> {
+pub async fn save_progress(comic_id: &str, page: u32) -> Result<ReadingProgress, String> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Args<'a> {
@@ -101,6 +101,13 @@ pub async fn save_progress(comic_id: &str, page: u32) -> Result<(), String> {
         page: u32,
     }
     call("save_progress", &Args { comic_id, page }).await
+}
+
+pub async fn set_reading_status(comic_ids: &[String], status: ReadingStatus) -> Result<(), String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Args<'a> { comic_ids: &'a [String], status: ReadingStatus }
+    call("set_reading_status", &Args { comic_ids, status }).await
 }
 
 pub async fn pick_files() -> Result<Vec<ComicBook>, String> {

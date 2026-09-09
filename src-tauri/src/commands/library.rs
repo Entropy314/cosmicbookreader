@@ -30,7 +30,7 @@ pub async fn scan_directory(
     absorb(&state, &root, comics).await;
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Rescan every folder the library already draws from.
@@ -47,7 +47,7 @@ pub async fn refresh_library(state: State<'_, AppState>) -> Result<Vec<ComicBook
     }
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Walk one directory for comics, off the async runtime.
@@ -109,7 +109,7 @@ fn outermost(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[tauri::command]
 pub async fn get_library(state: State<'_, AppState>) -> Result<Vec<ComicBook>, String> {
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 #[tauri::command]
@@ -173,7 +173,7 @@ pub async fn pick_files(
     }
 
     persist(&state).await;
-    Ok(snapshot(&state).await)
+    snapshot(&state).await
 }
 
 /// Order by series, then chapter/issue number across different filename styles.
@@ -184,11 +184,18 @@ pub fn compare_comics(a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
 }
 
 /// The whole library, sorted for display.
-async fn snapshot(state: &AppState) -> Vec<ComicBook> {
+async fn catalog_snapshot(state: &AppState) -> Vec<ComicBook> {
     let mut comics: Vec<ComicBook> = state.library.read().await.values().cloned().collect();
     regroup(&mut comics);
     comics.sort_by(compare_comics);
     comics
+}
+
+async fn snapshot(state: &AppState) -> Result<Vec<ComicBook>, String> {
+    let cache = state.cache.lock().await;
+    let mut comics = catalog_snapshot(state).await;
+    cache.apply_reading_progress(&mut comics).map_err(|e| e.to_string())?;
+    Ok(comics)
 }
 
 /// Write the library to the cache DB. Best-effort: the filesystem is the real
@@ -201,7 +208,7 @@ pub(crate) async fn persist(state: &AppState) {
 
 pub(crate) async fn persist_checked(state: &AppState) -> Result<(), String> {
     let cache = state.cache.lock().await;
-    let comics = snapshot(state).await;
+    let comics = catalog_snapshot(state).await;
     cache.save_comics(&comics).map_err(|e| e.to_string())
 }
 
@@ -252,6 +259,7 @@ fn make_comic_book(path: &Path) -> anyhow::Result<ComicBook> {
         modified,
         drive_file_id: None,
         downloaded: true,
+        reading: Default::default(),
         series_hint,
     })
 }
@@ -273,6 +281,7 @@ mod tests {
             modified: 0,
             drive_file_id: None,
             downloaded: true,
+            reading: Default::default(),
             series_hint: None,
         }
     }
@@ -363,5 +372,23 @@ mod tests {
         let comic = make_comic_book(&path).unwrap();
         assert_eq!(comic.series, "Saga");
         assert_eq!(comic.series_hint.as_deref(), Some("Saga"));
+    }
+
+    #[tokio::test]
+    async fn library_snapshots_attach_progress_after_catalog_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::new(&directory.path().join("cache")).unwrap();
+        let mut book = comic("Saga", "Saga 1");
+        book.id = "stable-id".into();
+        cache.record_progress(&book.id, 2, Some(3)).unwrap();
+        let drive = crate::drive::DriveService::new(&directory.path().join("drive")).unwrap();
+        let state = AppState::new(cache, vec![book], drive);
+        // New catalog entries start with no progress; persistence must not
+        // erase the separate record or deadlock while attaching it.
+        persist_checked(&state).await.unwrap();
+        let loaded = snapshot(&state).await.unwrap();
+        assert_eq!(loaded[0].reading.status, crate::types::ReadingStatus::Completed);
+        assert_eq!(loaded[0].reading.last_page, Some(2));
+        assert_eq!(loaded[0].page_count, Some(3));
     }
 }

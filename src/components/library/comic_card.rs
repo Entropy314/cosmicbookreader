@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::state::{AppContext, ContextMenuState, ContextMenuTarget};
-use crate::types::ComicBook;
+use crate::types::{ComicBook, ReadingStatus};
 
 /// A readable chapter row, including for books whose covers are not downloaded.
 #[component]
@@ -22,7 +22,11 @@ pub fn ComicCard(comic: ComicBook) -> impl IntoView {
     let action = if cloud {
         "Download & read"
     } else if comic.downloaded {
-        "Read"
+        match comic.reading.status {
+            ReadingStatus::Unread => "Read",
+            ReadingStatus::Reading => "Continue",
+            ReadingStatus::Completed => "Read again",
+        }
     } else {
         "Unavailable"
     };
@@ -59,6 +63,14 @@ pub fn ComicCard(comic: ComicBook) -> impl IntoView {
                 <div class="book-row-meta">
                     <span>{comic.series}</span>
                     <span class="availability-label" class:offline=comic.downloaded>{availability}</span>
+                </div>
+                <div class="book-reading-progress">
+                    <span class="reading-status" class:completed=(comic.reading.status == ReadingStatus::Completed)>
+                        {comic.reading.label(comic.page_count)}
+                    </span>
+                    {(comic.reading.status != ReadingStatus::Unread).then(|| comic.reading.percent(comic.page_count)).flatten().map(|percent| view! {
+                        <progress class="chapter-progress" aria-label="Book reading progress" max="100" value=percent></progress>
+                    })}
                 </div>
             </div>
             <a class="book-read-action" class:unavailable=!available aria-disabled=(!available).to_string()
@@ -107,7 +119,7 @@ pub fn BookList(comics: Memo<Vec<ComicBook>>) -> impl IntoView {
             <Show when=move || comics.with(Vec::is_empty)><super::empty_state::NoResults /></Show>
             <div class="book-list">
                 <For each=move || comics.get()
-                    key=|c| (c.id.clone(), c.title.clone(), c.series.clone(), c.downloaded)
+                    key=|c| (c.id.clone(), c.title.clone(), c.series.clone(), c.downloaded, c.page_count, c.reading.clone())
                     children=move |comic| view! { <ComicCard comic=comic /> } />
             </div>
         </div>

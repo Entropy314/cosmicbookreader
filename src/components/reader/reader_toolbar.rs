@@ -37,6 +37,11 @@ pub fn ReaderToolbar(
 
     view! {
         <div class="reader-controls">
+            {move || reader.progress_error.get().map(|error| view! {
+                <div class="progress-save-error" role="alert"><span>{format!("Reading progress could not be saved: {error}")}</span>
+                    <button class="text-button" on:click=move |_| reader.retry_progress()>"Retry saving"</button>
+                </div>
+            })}
             <div class="reader-caption"><span title=title>{title}</span><span>"Progress saves automatically"</span></div>
             <div class="reader-toolbar">
                 <div class="toolbar-left">

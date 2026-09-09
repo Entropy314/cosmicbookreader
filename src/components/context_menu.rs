@@ -1,5 +1,6 @@
 use crate::invoke;
 use crate::state::{AppContext, ContextMenuTarget};
+use crate::types::ReadingStatus;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -24,6 +25,21 @@ pub fn ContextMenu() -> impl IntoView {
                 .filter(|book| ids.contains(&book.id) && book.downloaded).map(|book| book.id.clone()).collect());
             let count = ids.len();
             let delete_count = delete_ids.len();
+            let status_ids = StoredValue::new(ids.clone());
+            let mark = move |status| {
+                let ids = status_ids.get_value();
+                ctx.context_menu.set(None);
+                ctx.selected_comics.update(|s| s.clear());
+                spawn_local(async move {
+                    match invoke::set_reading_status(&ids, status).await {
+                        Ok(()) => match invoke::get_library().await {
+                            Ok(books) => ctx.library.set(books),
+                            Err(error) => ctx.error_message.set(Some(error)),
+                        },
+                        Err(error) => ctx.error_message.set(Some(error)),
+                    }
+                });
+            };
             let act = move |ids: Vec<String>, delete_file: bool| {
                 if delete_file && !window().confirm_with_message(&format!("Delete {} local file(s) from this computer? This cannot be undone. Google Drive originals are kept.", ids.len())).unwrap_or(false) { return; }
                 ctx.context_menu.set(None);
@@ -46,8 +62,10 @@ pub fn ContextMenu() -> impl IntoView {
             view! {
                 <div class="ctx-backdrop" on:click=close on:contextmenu=close />
                 <div class="context-menu" role="group" aria-label="Book actions"
-                    style=format!("left: clamp(8px, {}px, calc(100vw - 250px)); top: clamp(8px, {}px, calc(100dvh - 180px));", menu.x, menu.y)
+                    style=format!("left: clamp(8px, {}px, calc(100vw - 250px)); top: clamp(8px, {}px, calc(100dvh - 290px));", menu.x, menu.y)
                     on:click=|e| e.stop_propagation() on:contextmenu=|e| e.prevent_default()>
+                    <button class="ctx-item" on:click=move |_| mark(ReadingStatus::Completed)>"Mark completed"</button>
+                    <button class="ctx-item" title="Reset reading status and saved page" on:click=move |_| mark(ReadingStatus::Unread)>"Mark unread · reset progress"</button>
                     <button class="ctx-item" on:click=move |_| act(ids.clone(), false)>
                         {if count == 1 { "Remove from library".into() } else { format!("Remove {count} books from library") }}
                     </button>

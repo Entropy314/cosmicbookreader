@@ -1,4 +1,5 @@
 pub mod thumbnail;
+mod progress;
 
 use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
@@ -73,6 +74,7 @@ impl CacheManager {
             )?;
         }
 
+        progress::migrate(&db)?;
         Ok(CacheManager { db, thumb_dir })
     }
 
@@ -190,12 +192,14 @@ impl CacheManager {
                     modified: row.get::<_, i64>(7)? as u64,
                     drive_file_id: row.get(8)?,
                     downloaded,
+                    reading: Default::default(),
                     series_hint,
                 })
             })?
             .filter_map(|r| r.ok())
             .collect();
         regroup(&mut comics);
+        self.apply_reading_progress(&mut comics)?;
         Ok(comics)
     }
 
@@ -209,16 +213,9 @@ impl CacheManager {
             .unwrap_or(0) as u32
     }
 
+    #[cfg(test)]
     pub fn save_last_read_page(&self, comic_id: &str, page: u32) -> anyhow::Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        // Upsert: a comic whose cover was never generated still records progress.
-        self.db.execute(
-            "INSERT OR REPLACE INTO progress (comic_id, page, updated_at) VALUES (?1, ?2, ?3)",
-            params![comic_id, page as i64, now as i64],
-        )?;
+        self.record_progress(comic_id, page, None)?;
         Ok(())
     }
 }
@@ -285,6 +282,7 @@ mod tests {
             modified: 456,
             drive_file_id: None,
             downloaded: true,
+            reading: Default::default(),
             series_hint: None,
         }
     }

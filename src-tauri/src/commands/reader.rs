@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::formats::open_archive;
 use crate::state::{ActiveReader, AppState};
-use crate::types::{OpenComicResult, PageData, bytes_to_data_uri};
+use crate::types::{OpenComicResult, PageData, ReadingProgress, ReadingStatus, bytes_to_data_uri};
 
 #[tauri::command]
 pub async fn open_comic(
@@ -20,7 +20,7 @@ pub async fn open_comic(
             .ok_or_else(|| format!("Comic '{}' not found in library", comic_id))?
     };
 
-    let comic = crate::drive::ensure_downloaded(&state, comic).await?;
+    let mut comic = crate::drive::ensure_downloaded(&state, comic).await?;
     let path = comic.path.clone();
     let id = comic_id.clone();
 
@@ -67,6 +67,8 @@ pub async fn open_comic(
         *reader = Some(ActiveReader { comic_id: id, archive, page_count });
     }
 
+    comic.page_count = Some(page_count);
+    comic.reading = state.cache.lock().await.reading_progress(&comic_id).map_err(|e| e.to_string())?;
     Ok(OpenComicResult { comic, page_count, page })
 }
 
@@ -135,11 +137,26 @@ pub async fn save_progress(
     comic_id: String,
     page: u32,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    let cache = state.cache.lock().await;
-    cache.save_last_read_page(&comic_id, page).map_err(|e| e.to_string())
+) -> Result<ReadingProgress, String> {
+    let count = state.library.read().await.get(&comic_id).and_then(|comic| comic.page_count)
+        .ok_or("Open this book before saving its reading position.")?;
+    state.cache.lock().await.record_progress(&comic_id, page, Some(count)).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn set_reading_status(
+    comic_ids: Vec<String>,
+    status: ReadingStatus,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let library = state.library.read().await;
+        if comic_ids.iter().any(|id| !library.contains_key(id)) {
+            return Err("One of these books is no longer in the library. Refresh and try again.".into());
+        }
+    }
+    state.cache.lock().await.set_reading_status(&comic_ids, status).map_err(|e| e.to_string())
+}
 
 /// Flip the window between fullscreen and windowed, returning the new state.
 ///

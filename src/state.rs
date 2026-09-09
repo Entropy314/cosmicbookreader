@@ -150,6 +150,7 @@ mod tests {
             format: ComicFormat::Cbz,
             page_count: None,
             downloaded: true,
+            reading: Default::default(),
         }
     }
 

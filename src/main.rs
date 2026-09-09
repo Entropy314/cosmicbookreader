@@ -10,6 +10,8 @@ mod invoke;
 mod state;
 #[cfg(any(target_arch = "wasm32", test))]
 mod types;
+#[cfg(any(target_arch = "wasm32", test))]
+mod reading;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
