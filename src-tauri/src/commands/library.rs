@@ -373,4 +373,22 @@ mod tests {
         assert_eq!(comic.series, "Saga");
         assert_eq!(comic.series_hint.as_deref(), Some("Saga"));
     }
+
+    #[tokio::test]
+    async fn library_snapshots_attach_progress_after_catalog_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::new(&directory.path().join("cache")).unwrap();
+        let mut book = comic("Saga", "Saga 1");
+        book.id = "stable-id".into();
+        cache.record_progress(&book.id, 2, Some(3)).unwrap();
+        let drive = crate::drive::DriveService::new(&directory.path().join("drive")).unwrap();
+        let state = AppState::new(cache, vec![book], drive);
+        // New catalog entries start with no progress; persistence must not
+        // erase the separate record or deadlock while attaching it.
+        persist_checked(&state).await.unwrap();
+        let loaded = snapshot(&state).await.unwrap();
+        assert_eq!(loaded[0].reading.status, crate::types::ReadingStatus::Completed);
+        assert_eq!(loaded[0].reading.last_page, Some(2));
+        assert_eq!(loaded[0].page_count, Some(3));
+    }
 }

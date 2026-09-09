@@ -57,13 +57,31 @@ Grouping and browsing an index do not download book files.
 
 Filter by **Everything**, **Available offline**, or **Not downloaded**. Titles
 open into a chapter list with **Read** or **Download & read** actions. Library
-search is preserved when returning from a title. **Continue reading** returns
-to your last opened book and saved page.
+search is preserved when returning from a title. **Continue reading** resumes
+an unfinished book at its saved page. **Read next unread** opens the first
+unread book in chapter order, within the current title and availability filters.
+
+Books show **Unread**, **Reading**, or **Completed**, with page progress for
+opened books. Opening the first page starts reading; displaying the last page
+marks the book completed. Completion stays recorded when revisiting earlier
+pages. Title cards and title pages show the number of completed books.
+Use **⋯ → Mark completed** or **Mark unread · reset progress** on a book, title,
+or selection. Marking unread resets its saved page to the beginning. These
+actions work on indexed books without downloading them. Progress survives
+restarts, rescans, and Drive syncs; existing saved positions are migrated.
 
 Use checkboxes to select books and **Selection actions** for bulk changes.
 The **⋯** button (or right-click) opens book/title actions. Deleting local files
 asks for confirmation; Drive originals stay unchanged. `Ctrl+A` / `Cmd+A`
 select all visible books outside text fields, and `Esc` clears the selection.
+
+The reading-progress browser regression check uses a fake Tauri bridge and
+requires no Google account:
+
+```sh
+NO_COLOR=true trunk build --dist /tmp/reader-test-dist
+python3 tests/reading_progress_ui.py --dist /tmp/reader-test-dist --browser /path/to/chrome-headless-shell
+```
 
 ## Google Drive collection
 

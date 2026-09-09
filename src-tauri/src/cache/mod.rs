@@ -213,6 +213,7 @@ impl CacheManager {
             .unwrap_or(0) as u32
     }
 
+    #[cfg(test)]
     pub fn save_last_read_page(&self, comic_id: &str, page: u32) -> anyhow::Result<()> {
         self.record_progress(comic_id, page, None)?;
         Ok(())

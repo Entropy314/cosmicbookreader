@@ -3,8 +3,8 @@ use leptos::task::spawn_local;
 
 use crate::invoke;
 use crate::state::{load_setting, save_setting, AppContext};
-use std::sync::{Arc, Mutex};
 use crate::types::{OpenComicResult, PageData};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum FitMode {
@@ -96,7 +96,9 @@ impl ReaderState {
     }
 
     pub fn go_to_page(&self, page: u32) {
-        if page >= self.page_count.get_untracked() { return; }
+        if page >= self.page_count.get_untracked() {
+            return;
+        }
         let request = self.page_request.get_untracked().wrapping_add(1);
         self.page_request.set(request);
         self.current_page.set(page);
@@ -115,7 +117,9 @@ impl ReaderState {
         self.is_loading.set(true);
         spawn_local(async move {
             let result = invoke::get_page(&id, page).await;
-            if state.page_request.try_get_untracked() != Some(request) { return; }
+            if state.page_request.try_get_untracked() != Some(request) {
+                return;
+            }
             match result {
                 Ok(data) => {
                     state.page_data.set(Some(data));
@@ -123,7 +127,9 @@ impl ReaderState {
                 }
                 Err(e) => {
                     // A failed or superseded request must never advance progress.
-                    if let Some(previous) = state.page_data.get_untracked() { state.current_page.set(previous.index); }
+                    if let Some(previous) = state.page_data.get_untracked() {
+                        state.current_page.set(previous.index);
+                    }
                     state.error.set(Some(e));
                 }
             }
@@ -138,7 +144,12 @@ impl ReaderState {
         let start = {
             let mut queue = queue.lock().unwrap();
             queue.pending.push_back(page);
-            if queue.running { false } else { queue.running = true; true }
+            if queue.running {
+                false
+            } else {
+                queue.running = true;
+                true
+            }
         };
         let id = self.comic_id.get_value();
         let total = self.page_count.get_untracked();
@@ -152,7 +163,10 @@ impl ReaderState {
                         let mut queue = queue.lock().unwrap();
                         match queue.pending.pop_front() {
                             Some(page) => page,
-                            None => { queue.running = false; break; }
+                            None => {
+                                queue.running = false;
+                                break;
+                            }
                         }
                     };
                     match invoke::save_progress(&id, page).await {
@@ -167,7 +181,9 @@ impl ReaderState {
                             });
                             let _ = error.try_set(None);
                         }
-                        Err(message) => { let _ = error.try_set(Some(message)); }
+                        Err(message) => {
+                            let _ = error.try_set(Some(message));
+                        }
                     }
                 }
             });
@@ -175,13 +191,19 @@ impl ReaderState {
         let slot = self.prefetch;
         if page + 1 < total {
             spawn_local(async move {
-                if let Ok(data) = invoke::get_page(&id, page + 1).await { let _ = slot.try_set(Some(data)); }
+                if let Ok(data) = invoke::get_page(&id, page + 1).await {
+                    let _ = slot.try_set(Some(data));
+                }
             });
-        } else { slot.set(None); }
+        } else {
+            slot.set(None);
+        }
     }
 
     pub fn retry_progress(&self) {
-        if let Some(page) = self.page_data.get_untracked() { self.record_and_prefetch(page.index); }
+        if let Some(page) = self.page_data.get_untracked() {
+            self.record_and_prefetch(page.index);
+        }
     }
 
     pub fn zoom_in(&self) {
@@ -255,7 +277,11 @@ pub fn use_comic_reader(comic_id: String) -> ReaderState {
             return;
         }
         match result {
-            Ok(OpenComicResult { comic, page_count, page }) => {
+            Ok(OpenComicResult {
+                comic,
+                page_count,
+                page,
+            }) => {
                 state.app.library.update(|books| {
                     if let Some(book) = books.iter_mut().find(|book| book.id == id) {
                         book.page_count = Some(page_count);
