@@ -6,7 +6,8 @@ use tauri_plugin_dialog::DialogExt;
 use walkdir::WalkDir;
 
 use crate::state::AppState;
-use crate::types::{extract_series, ComicBook, ComicFormat, make_comic_id};
+use crate::series::{compare_chapters, folder_hint, regroup, series_for};
+use crate::types::{ComicBook, ComicFormat, make_comic_id};
 
 #[tauri::command]
 pub async fn pick_directory(app: AppHandle) -> Result<Option<String>, String> {
@@ -25,7 +26,7 @@ pub async fn scan_directory(
     state: State<'_, AppState>,
 ) -> Result<Vec<ComicBook>, String> {
     let root = PathBuf::from(&path);
-    let comics = scan_dir(root.clone()).await?;
+    let comics = scan_dir(root.clone(), state.drive.downloads.clone()).await?;
     absorb(&state, &root, comics).await;
 
     persist(&state).await;
@@ -40,7 +41,7 @@ pub async fn scan_directory(
 #[tauri::command]
 pub async fn refresh_library(state: State<'_, AppState>) -> Result<Vec<ComicBook>, String> {
     for root in known_roots(&state).await {
-        if let Ok(comics) = scan_dir(root.clone()).await {
+        if let Ok(comics) = scan_dir(root.clone(), state.drive.downloads.clone()).await {
             absorb(&state, &root, comics).await;
         }
     }
@@ -50,11 +51,12 @@ pub async fn refresh_library(state: State<'_, AppState>) -> Result<Vec<ComicBook
 }
 
 /// Walk one directory for comics, off the async runtime.
-async fn scan_dir(root: PathBuf) -> Result<Vec<ComicBook>, String> {
+async fn scan_dir(root: PathBuf, drive_downloads: PathBuf) -> Result<Vec<ComicBook>, String> {
     tokio::task::spawn_blocking(move || {
         WalkDir::new(&root)
             .follow_links(true)
             .into_iter()
+            .filter_entry(|e| !e.path().starts_with(&drive_downloads))
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
             // Unsupported or unreadable files are skipped silently.
@@ -69,7 +71,7 @@ async fn scan_dir(root: PathBuf) -> Result<Vec<ComicBook>, String> {
 /// from disk also leave the persisted library.
 async fn absorb(state: &AppState, root: &Path, comics: Vec<ComicBook>) {
     let mut library = state.library.write().await;
-    library.retain(|_, c| !Path::new(&c.path).starts_with(root));
+    library.retain(|id, c| crate::drive::is_drive_comic(id) || !Path::new(&c.path).starts_with(root));
     for comic in comics {
         library.insert(comic.id.clone(), comic);
     }
@@ -82,6 +84,7 @@ async fn known_roots(state: &AppState) -> Vec<PathBuf> {
     outermost(
         library
             .values()
+            .filter(|c| !crate::drive::is_drive_comic(&c.id))
             .filter_map(|c| Path::new(&c.path).parent().map(Path::to_path_buf))
             .collect(),
     )
@@ -129,7 +132,11 @@ pub async fn delete_comic_file(
         library.get(&comic_id).map(|c| c.path.clone())
     };
     if let Some(path) = path {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e.to_string()),
+        }
     }
     state.library.write().await.remove(&comic_id);
     persist(&state).await;
@@ -169,16 +176,17 @@ pub async fn pick_files(
     Ok(snapshot(&state).await)
 }
 
-/// Order by series, then title, using natural (issue-aware) ordering so
-/// issue 2 sorts before issue 10.
+/// Order by series, then chapter/issue number across different filename styles.
 pub fn compare_comics(a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
     natord::compare_ignore_case(&a.series, &b.series)
-        .then_with(|| natord::compare_ignore_case(&a.title, &b.title))
+        .then_with(|| compare_chapters(&a.title, &b.title))
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 /// The whole library, sorted for display.
 async fn snapshot(state: &AppState) -> Vec<ComicBook> {
     let mut comics: Vec<ComicBook> = state.library.read().await.values().cloned().collect();
+    regroup(&mut comics);
     comics.sort_by(compare_comics);
     comics
 }
@@ -186,11 +194,15 @@ async fn snapshot(state: &AppState) -> Vec<ComicBook> {
 /// Write the library to the cache DB. Best-effort: the filesystem is the real
 /// source of truth, and a rescan rebuilds whatever fails to persist here.
 pub(crate) async fn persist(state: &AppState) {
-    let comics = snapshot(state).await;
-    let cache = state.cache.lock().await;
-    if let Err(e) = cache.save_comics(&comics) {
+    if let Err(e) = persist_checked(state).await {
         eprintln!("failed to persist library: {e}");
     }
+}
+
+pub(crate) async fn persist_checked(state: &AppState) -> Result<(), String> {
+    let cache = state.cache.lock().await;
+    let comics = snapshot(state).await;
+    cache.save_comics(&comics).map_err(|e| e.to_string())
 }
 
 fn make_comic_book(path: &Path) -> anyhow::Result<ComicBook> {
@@ -214,7 +226,10 @@ fn make_comic_book(path: &Path) -> anyhow::Result<ComicBook> {
         .unwrap_or("Unknown")
         .to_string();
 
-    let series = extract_series(&title);
+    let folders: Vec<_> = path.parent().into_iter().flat_map(Path::ancestors)
+        .take(3).filter_map(|p| p.file_name()?.to_str()).collect();
+    let series_hint = folder_hint(folders.into_iter().rev());
+    let series = series_for(&title, series_hint.as_deref());
 
     let meta = std::fs::metadata(path)?;
     let file_size = meta.len();
@@ -235,6 +250,9 @@ fn make_comic_book(path: &Path) -> anyhow::Result<ComicBook> {
         cover_cached: false,
         file_size,
         modified,
+        drive_file_id: None,
+        downloaded: true,
+        series_hint,
     })
 }
 
@@ -253,6 +271,9 @@ mod tests {
             cover_cached: false,
             file_size: 0,
             modified: 0,
+            drive_file_id: None,
+            downloaded: true,
+            series_hint: None,
         }
     }
 
@@ -307,5 +328,40 @@ mod tests {
         ];
         comics.sort_by(compare_comics);
         assert_eq!(comics[0].series, "Akira");
+    }
+
+    #[test]
+    fn regrouping_merges_filename_variants_and_preserves_distinct_titles() {
+        let mut comics = vec![
+            comic("old", "CH209 - Chainsaw Man [@The_Mates]"),
+            comic("old", "chainsaw man - 002 [Color]"),
+            comic("old", "Chainsaw Man - 001 [Color]"),
+            comic("old", "berserk chapter a0"),
+            comic("old", "Berserk_complete"),
+            comic("old", "Solo Leveling 1"),
+            comic("old", "Chapter 02 - Solo Leveling_ Ragnarok"),
+        ];
+        regroup(&mut comics);
+        assert!(comics[..3].iter().all(|c| c.series == "Chainsaw Man"));
+        assert!(comics[3..5].iter().all(|c| c.series == "Berserk"));
+        assert_ne!(comics[5].series, comics[6].series);
+        comics.sort_by(compare_comics);
+        let chainsaw: Vec<_> = comics.iter().filter(|c| c.series == "Chainsaw Man").map(|c| c.title.as_str()).collect();
+        assert_eq!(chainsaw, ["Chainsaw Man - 001 [Color]", "chainsaw man - 002 [Color]", "CH209 - Chainsaw Man [@The_Mates]"]);
+        let previous: Vec<_> = comics.iter().map(|c| c.series.clone()).collect();
+        regroup(&mut comics);
+        assert_eq!(previous, comics.iter().map(|c| c.series.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn unnamed_local_chapters_use_the_series_folder_above_volume_folders() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("Manga/Saga/Volume 01");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("Chapter 002.cbz");
+        std::fs::write(&path, b"book").unwrap();
+        let comic = make_comic_book(&path).unwrap();
+        assert_eq!(comic.series, "Saga");
+        assert_eq!(comic.series_hint.as_deref(), Some("Saga"));
     }
 }

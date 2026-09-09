@@ -12,6 +12,22 @@ pub fn App() -> impl IntoView {
     let ctx = AppContext::new();
     provide_context(ctx);
 
+    // Backend sync continues across reader/library navigation. Polling only
+    // transfers a library snapshot when a sync actually changes its revision.
+    let polling = RwSignal::new(false);
+    let poll = move || {
+        if polling.get_untracked() { return; }
+        polling.set(true);
+        leptos::task::spawn_local(async move {
+            crate::invoke::refresh_drive_status(ctx).await;
+            polling.set(false);
+        });
+    };
+    poll();
+    if let Ok(interval) = set_interval_with_handle(poll, std::time::Duration::from_secs(2)) {
+        on_cleanup(move || interval.clear());
+    }
+
     view! {
         <Router>
             <Routes fallback=|| view! { <p class="not-found">"Page not found"</p> }>

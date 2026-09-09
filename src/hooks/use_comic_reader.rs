@@ -190,7 +190,18 @@ pub fn use_comic_reader(comic_id: String) -> ReaderState {
     // Open comic on mount - spawn directly, no reactive tracking needed
     let id = state.comic_id.get_value();
     spawn_local(async move {
-        match invoke::open_comic(&id).await {
+        let result = invoke::open_comic(&id).await;
+        // A cloud download may outlive this reader route. Avoid writing to
+        // disposed signals and release an archive opened after navigation.
+        if state.is_loading.try_get_untracked().is_none() {
+            // A superseded open returns an error; closing by ID in that case
+            // could close a newer reader for the same comic.
+            if result.is_ok() {
+                let _ = invoke::close_comic(&id).await;
+            }
+            return;
+        }
+        match result {
             Ok(OpenComicResult { page_count, page, .. }) => {
                 let index = page.index;
                 state.page_count.set(page_count);

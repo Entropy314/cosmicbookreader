@@ -34,6 +34,11 @@ pub struct ComicBook {
     pub cover_cached: bool,
     pub file_size: u64,
     pub modified: u64,
+    #[serde(default)]
+    pub drive_file_id: Option<String>,
+    pub downloaded: bool,
+    #[serde(default)]
+    pub series_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,91 +52,6 @@ pub struct OpenComicResult {
     pub comic: ComicBook,
     pub page_count: u32,
     pub page: PageData,
-}
-
-/// Derive a series name by stripping trailing metadata from the filename.
-///
-/// Real-world comic and manga filenames stack metadata on the right, and the
-/// series name is whatever survives:
-///   "Spy x Family 098.1 (2024) (Digital) (1r0n)" -> "Spy x Family"
-///   "Solo Leveling - Chapter 000 @Manga_LightN"  -> "Solo Leveling"
-///   "One_Piece_v01"                              -> "One Piece"
-///
-/// Some groups put the chapter at the front instead, so leading tags are
-/// stripped too:
-///   "[MC] [01] Fire Punch @Manga_Campus"         -> "Fire Punch"
-pub fn extract_series(title: &str) -> String {
-    // Names with spaces keep them, so a tag like "@Manga_LightN" stays one
-    // token. Names without spaces use _ or - as the separator instead.
-    let words: Vec<&str> = if title.split_whitespace().count() > 1 {
-        title.split_whitespace().collect()
-    } else {
-        title.split(['_', '-']).filter(|w| !w.is_empty()).collect()
-    };
-    // Leading "[group] [chapter]" tags, which some scanlators put up front.
-    let mut start = 0;
-    while start < words.len() && is_leading_tag(words[start]) {
-        start += 1;
-    }
-
-    let mut end = words.len();
-    while end > start && is_metadata_token(words[end - 1]) {
-        end -= 1;
-    }
-
-    if start >= end {
-        // Nothing but metadata - keep the name as-is rather than return "".
-        return title.trim().to_string();
-    }
-
-    // A stray separator can survive at either edge ("Fire Punch_").
-    words[start..end]
-        .join(" ")
-        .trim_matches(|c: char| matches!(c, '_' | '-' | '–' | '—' | '|' | ' '))
-        .to_string()
-}
-
-/// A bracketed group or uploader handle leading the filename. Deliberately not
-/// bare numbers: "2000 AD 1234" starts with part of its own name.
-fn is_leading_tag(tok: &str) -> bool {
-    (matches!(tok.chars().next(), Some('(' | '[' | '{'))
-        && matches!(tok.chars().last(), Some(')' | ']' | '}')))
-        || tok.starts_with('@')
-}
-
-/// Does this trailing token describe the issue rather than name the series?
-fn is_metadata_token(tok: &str) -> bool {
-    // Wrapped groups: (2024), (Digital), [Group], {v2}
-    if matches!(tok.chars().next(), Some('(' | '[' | '{'))
-        && matches!(tok.chars().last(), Some(')' | ']' | '}'))
-    {
-        return true;
-    }
-
-    // Uploader / scanlator handles: @Manga_LightN
-    if tok.starts_with('@') {
-        return true;
-    }
-
-    // Bare separators left behind once the tail is stripped
-    if !tok.is_empty() && tok.chars().all(|c| matches!(c, '-' | '–' | '—' | '_' | '|')) {
-        return true;
-    }
-
-    // Chapter / volume keywords
-    let lower = tok.to_lowercase();
-    if matches!(
-        lower.trim_end_matches('.'),
-        "chapter" | "ch" | "vol" | "volume" | "part" | "episode" | "ep" | "issue" | "no"
-    ) {
-        return true;
-    }
-
-    // Issue numbers, including decimals and prefixes: 12, 098.1, #12, v01, c001
-    let num = tok.trim_start_matches(['#', 'v', 'V', 'c', 'C']);
-    !num.is_empty()
-        && num.chars().all(|c| c.is_ascii_digit() || c == '.')
-        && num.chars().any(|c| c.is_ascii_digit())
 }
 
 pub fn make_comic_id(path: &str) -> String {
@@ -160,6 +80,7 @@ fn detect_mime(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::series::extract_series;
 
     #[test]
     fn groups_when_the_chapter_number_leads_the_filename() {

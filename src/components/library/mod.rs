@@ -1,4 +1,5 @@
 mod comic_card;
+mod drive_panel;
 mod empty_state;
 mod library_view;
 mod series_detail_view;

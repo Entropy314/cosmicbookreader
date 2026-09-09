@@ -1,6 +1,8 @@
 mod cache;
 mod commands;
+mod drive;
 mod formats;
+mod series;
 mod state;
 mod types;
 
@@ -29,10 +31,20 @@ pub fn run() {
                 Vec::new()
             });
 
-            app.manage(AppState::new(cache, comics));
+            let drive_dir = app.path().app_data_dir()?.join("google-drive");
+            let drive = drive::DriveService::new(&drive_dir)?;
+            app.manage(AppState::new(cache, comics, drive));
+            drive::start_background_sync(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            drive::get_drive_status,
+            drive::connect_drive,
+            drive::sync_drive,
+            drive::cancel_drive_operation,
+            drive::set_drive_auto_sync,
+            drive::set_drive_sync_mode,
+            drive::disconnect_drive,
             commands::library::pick_directory,
             commands::library::scan_directory,
             commands::library::get_library,

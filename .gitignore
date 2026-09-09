@@ -1,3 +1,5 @@
 /dist/
 /target/
 /Cargo.lock
+client_secret_*.json
+/src-tauri/google-drive-client.json

@@ -2,9 +2,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::invoke;
-use crate::state::{AppContext, ViewMode, save_directory};
+use crate::state::{matches_search, save_directory, AppContext, Availability, ViewMode};
 
-use super::comic_card::ComicCard;
+use super::comic_card::BookList;
 use super::empty_state::EmptyState;
 use super::shelves_view::ShelvesView;
 use super::toolbar::LibraryToolbar;
@@ -12,6 +12,56 @@ use super::toolbar::LibraryToolbar;
 #[component]
 pub fn LibraryView() -> impl IntoView {
     let ctx = use_context::<AppContext>().unwrap();
+    let visible_books = Memo::new(move |_| {
+        ctx.library.with(|books| {
+            books
+                .iter()
+                .filter(|c| matches_search(c, &ctx.search_query.get(), ctx.availability.get()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
+    let resume = Memo::new(move |_| {
+        let id = ctx.last_opened.get();
+        ctx.library
+            .with(|books| books.iter().find(|c| Some(&c.id) == id.as_ref()).cloned())
+    });
+    let keyboard = window_event_listener(leptos::ev::keydown, move |e| {
+        if event_target::<web_sys::Element>(&e)
+            .closest("input, textarea, select, [contenteditable]")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
+        if (e.ctrl_key() || e.meta_key()) && e.key() == "a" {
+            let series = ctx.selected_series.get_untracked();
+            if series.is_none() && ctx.view_mode.get_untracked() == ViewMode::Shelves {
+                return;
+            }
+            e.prevent_default();
+            let query = if series.is_some() {
+                ctx.series_query.get_untracked()
+            } else {
+                ctx.search_query.get_untracked()
+            };
+            let ids = ctx.library.with_untracked(|books| {
+                books
+                    .iter()
+                    .filter(|c| {
+                        series.as_ref().is_none_or(|s| &c.series == s)
+                            && matches_search(c, &query, ctx.availability.get_untracked())
+                    })
+                    .map(|c| c.id.clone())
+                    .collect()
+            });
+            ctx.selected_comics.set(ids);
+        } else if e.key() == "Escape" {
+            ctx.selected_comics.update(|s| s.clear());
+        }
+    });
+    on_cleanup(move || keyboard.remove());
 
     // On mount: paint the persisted library, then refresh it from disk in the
     // background so a fast start can't show a stale list.
@@ -69,22 +119,34 @@ pub fn LibraryView() -> impl IntoView {
     view! {
         <div class="library-view">
             <LibraryToolbar on_open=open_folder on_add_files=add_files />
+            {move || ctx.drive_panel_open.get().then(|| view! { <super::drive_panel::DrivePanel /> })}
 
             // Error banner
             {move || ctx.error_message.get().map(|msg| view! {
-                <div class="error-banner" on:click=move |_| ctx.error_message.set(None)>
+                <div class="error-banner" role="alert">
                     <span>{msg}</span>
-                    <button class="error-close">"×"</button>
+                    <button class="error-close" aria-label="Dismiss error" on:click=move |_| ctx.error_message.set(None)>"×"</button>
                 </div>
             })}
 
             // Loading overlay
             {move || is_loading().then(|| view! {
-                <div class="loading-overlay">
-                    <div class="spinner"></div>
-                    <p>"Scanning comics..."</p>
+                <div class="library-loading" role="status">
+                    <div class="spinner" aria-hidden="true"></div>
+                    <p>"Updating your library…"</p>
                 </div>
             })}
+
+            <Show when=move || ctx.selected_series.get().is_none() && ctx.search_query.get().is_empty()
+                && ctx.availability.get() == Availability::All>
+                {move || resume.get().map(|book| view! {
+                    <a class="continue-reading" href=format!("/read/{}", book.id)>
+                        <span class="continue-symbol" aria-hidden="true">"↗"</span>
+                        <span><strong>"Continue reading"</strong><span>{book.title}</span></span>
+                        <span class="continue-action">"Resume →"</span>
+                    </a>
+                })}
+            </Show>
 
             // Library content
             {move || {
@@ -94,29 +156,15 @@ pub fn LibraryView() -> impl IntoView {
                     view! { <ShelvesView /> }.into_any()
                 } else {
                     view! {
-                        <div class="comic-grid">
-                            <For
-                                each=move || {
-                                    let query = ctx.search_query.get().to_lowercase();
-                                    ctx.library.with(|l| {
-                                        if query.is_empty() {
-                                            l.clone()
-                                        } else {
-                                            l.iter()
-                                                .filter(|c| c.title.to_lowercase().contains(&query) || c.series.to_lowercase().contains(&query))
-                                                .cloned()
-                                                .collect()
-                                        }
-                                    })
-                                }
-                                key=|comic| comic.id.clone()
-                                children=move |comic| view! { <ComicCard comic=comic /> }
-                            />
-                        </div>
+                        <section class="all-books-view">
+                            <div class="title-library-header"><p class="eyebrow">"YOUR LIBRARY"</p><h1>"All books"</h1>
+                                <p>{move || format!("Showing {} of {} books", visible_books.with(Vec::len), ctx.library.with(Vec::len))}</p>
+                            </div>
+                            <BookList comics=visible_books />
+                        </section>
                     }.into_any()
                 }
             }}
         </div>
     }
 }
-

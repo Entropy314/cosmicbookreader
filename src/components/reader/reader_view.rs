@@ -32,6 +32,16 @@ fn ReaderPane(comic_id: String) -> impl IntoView {
     let reader = use_comic_reader(comic_id);
     let navigate = use_navigate();
 
+    Effect::new(move |_| {
+        if reader.page_data.with(|page| page.is_some()) {
+            let id = reader.comic_id.get_value();
+            if ctx.last_opened.get_untracked().as_deref() != Some(&id) {
+                crate::state::save_setting("last_opened_book", &id);
+                ctx.last_opened.set(Some(id));
+            }
+        }
+    });
+
     // Reading direction is a property of the series, not the chapter.
     let series = StoredValue::new(ctx.library.with_untracked(|lib| {
         let id = reader.comic_id.get_value();
@@ -64,6 +74,9 @@ fn ReaderPane(comic_id: String) -> impl IntoView {
     // Turning past either end of a chapter rolls into the neighbouring one.
     // Chapters are often only a handful of pages, so this is the common case.
     let advance = Callback::new(move |forward: bool| {
+        if reader.page_data.with_untracked(|page| page.is_none()) {
+            return;
+        }
         let page = reader.current_page.get_untracked();
         if forward {
             if page + 1 < reader.page_count.get_untracked() {

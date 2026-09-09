@@ -3,7 +3,8 @@ pub mod thumbnail;
 use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 
-use crate::types::{extract_series, ComicBook, ComicFormat};
+use crate::series::{regroup, series_for};
+use crate::types::{ComicBook, ComicFormat};
 
 pub use thumbnail::extract_thumbnail;
 
@@ -44,6 +45,19 @@ impl CacheManager {
                 modified    INTEGER NOT NULL
             );",
         )?;
+
+        let has_drive_file_id = db
+            .prepare("SELECT 1 FROM pragma_table_info('library') WHERE name = 'drive_file_id'")?
+            .exists([])?;
+        if !has_drive_file_id {
+            db.execute("ALTER TABLE library ADD COLUMN drive_file_id TEXT", [])?;
+        }
+        let has_series_hint = db
+            .prepare("SELECT 1 FROM pragma_table_info('library') WHERE name = 'series_hint'")?
+            .exists([])?;
+        if !has_series_hint {
+            db.execute("ALTER TABLE library ADD COLUMN series_hint TEXT", [])?;
+        }
 
         // One-time migration: progress used to live in thumbs.last_read_page,
         // which fresh databases no longer have. Without this, upgrading resets
@@ -119,9 +133,13 @@ impl CacheManager {
     }
 
     pub fn save_comics(&self, comics: &[ComicBook]) -> anyhow::Result<()> {
-        let mut stmt = self.db.prepare_cached(
-            "INSERT OR REPLACE INTO library (comic_id, path, title, series, format, page_count, file_size, modified)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        // Persist a complete snapshot atomically, including removals. Upserts
+        // alone brought deleted Drive/local entries back on the next launch.
+        let transaction = self.db.unchecked_transaction()?;
+        transaction.execute("DELETE FROM library", [])?;
+        let mut stmt = transaction.prepare_cached(
+            "INSERT OR REPLACE INTO library (comic_id, path, title, series, format, page_count, file_size, modified, drive_file_id, series_hint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
         for comic in comics {
             stmt.execute(params![
@@ -133,39 +151,51 @@ impl CacheManager {
                 comic.page_count.map(|p| p as i64),
                 comic.file_size as i64,
                 comic.modified as i64,
+                comic.drive_file_id,
+                comic.series_hint,
             ])?;
         }
+        drop(stmt);
+        transaction.commit()?;
         Ok(())
     }
 
     pub fn load_comics(&self) -> anyhow::Result<Vec<ComicBook>> {
         let mut stmt = self.db.prepare(
-            "SELECT comic_id, path, title, series, format, page_count, file_size, modified FROM library",
+            "SELECT comic_id, path, title, series, format, page_count, file_size, modified, drive_file_id, series_hint FROM library",
         )?;
-        let comics = stmt
+        let mut comics: Vec<ComicBook> = stmt
             .query_map([], |row| {
                 let format_str: String = row.get(4)?;
                 let page_count: Option<i64> = row.get(5)?;
                 let title: String = row.get(2)?;
+                let series_hint: Option<String> = row.get(9)?;
+                let path: String = row.get(1)?;
+                let file_size = row.get::<_, i64>(6)? as u64;
+                let downloaded = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == file_size);
                 Ok(ComicBook {
                     id: row.get(0)?,
-                    path: row.get(1)?,
+                    path,
                     // Series is derived from the title, so recompute rather
                     // than trust the stored column. Otherwise entries keep a
                     // stale grouping until their directory happens to be
                     // rescanned, and a library spanning several folders only
                     // ever heals the one that was scanned last.
-                    series: extract_series(&title),
+                    series: series_for(&title, series_hint.as_deref()),
                     title,
                     format: str_to_comic_format(&format_str),
                     page_count: page_count.map(|p| p as u32),
                     cover_cached: false,
-                    file_size: row.get::<_, i64>(6)? as u64,
+                    file_size,
                     modified: row.get::<_, i64>(7)? as u64,
+                    drive_file_id: row.get(8)?,
+                    downloaded,
+                    series_hint,
                 })
             })?
             .filter_map(|r| r.ok())
             .collect();
+        regroup(&mut comics);
         Ok(comics)
     }
 
@@ -217,6 +247,25 @@ fn str_to_comic_format(s: &str) -> ComicFormat {
 mod tests {
     use super::*;
 
+    #[test]
+    fn migrating_a_library_preserves_books_and_adds_remote_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Connection::open(directory.path().join("cache.db")).unwrap();
+        db.execute_batch("CREATE TABLE library (
+            comic_id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL,
+            series TEXT NOT NULL DEFAULT '', format TEXT NOT NULL, page_count INTEGER,
+            file_size INTEGER NOT NULL, modified INTEGER NOT NULL
+        ); INSERT INTO library VALUES ('existing', '/old.cbz', 'Saga 1', 'Saga', 'cbz', 20, 4, 1);").unwrap();
+        drop(db);
+        let cache = CacheManager::new(directory.path()).unwrap();
+        let comics = cache.load_comics().unwrap();
+        assert_eq!(comics.len(), 1);
+        assert_eq!(comics[0].id, "existing");
+        assert_eq!(comics[0].page_count, Some(20));
+        assert!(comics[0].drive_file_id.is_none());
+        cache.save_comics(&comics).unwrap();
+    }
+
     fn cache(tag: &str) -> CacheManager {
         let dir = std::env::temp_dir().join(format!("kbr-cache-{tag}"));
         std::fs::remove_dir_all(&dir).ok();
@@ -234,6 +283,9 @@ mod tests {
             cover_cached: false,
             file_size: 123,
             modified: 456,
+            drive_file_id: None,
+            downloaded: true,
+            series_hint: None,
         }
     }
 
@@ -311,6 +363,18 @@ mod tests {
         assert_eq!(loaded[0].series, "Saga");
         assert_eq!(loaded[0].format, ComicFormat::Cbz);
         assert_eq!(loaded[0].page_count, Some(20));
+    }
+
+    #[test]
+    fn library_snapshot_removes_missing_entries_but_keeps_progress() {
+        let c = cache("snapshot-removals");
+        c.save_comics(&[comic("a", "Saga 1"), comic("b", "Saga 2")]).unwrap();
+        c.save_last_read_page("b", 9).unwrap();
+        c.save_comics(&[comic("a", "Saga 1")]).unwrap();
+        assert_eq!(c.load_comics().unwrap().len(), 1);
+        assert_eq!(c.get_last_read_page("b"), 9);
+        c.save_comics(&[]).unwrap();
+        assert!(c.load_comics().unwrap().is_empty());
     }
 
     #[test]

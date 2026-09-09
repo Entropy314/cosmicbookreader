@@ -11,7 +11,15 @@ pub fn use_keyboard_shortcuts(
 ) {
     let navigate = use_navigate();
 
-    window_event_listener(leptos::ev::keydown, move |e| {
+    let listener = window_event_listener(leptos::ev::keydown, move |e| {
+        if event_target::<web_sys::Element>(&e)
+            .closest("input, textarea, select, [contenteditable]")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
         // Reading right-to-left swaps which horizontal key moves forward; the
         // vertical and paging keys keep their usual meaning.
         let forward_is_right = !reader.rtl.get_untracked();
@@ -60,4 +68,5 @@ pub fn use_keyboard_shortcuts(
             _ => {}
         }
     });
+    on_cleanup(move || listener.remove());
 }

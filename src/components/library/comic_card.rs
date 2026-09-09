@@ -1,54 +1,40 @@
 use leptos::prelude::*;
-use leptos::task::spawn_local;
-use leptos_router::hooks::use_navigate;
 
-use crate::invoke;
 use crate::state::{AppContext, ContextMenuState, ContextMenuTarget};
 use crate::types::ComicBook;
 
+/// A readable chapter row, including for books whose covers are not downloaded.
 #[component]
 pub fn ComicCard(comic: ComicBook) -> impl IntoView {
     let ctx = use_context::<AppContext>().unwrap();
-    let navigate = use_navigate();
-
-    // Store id as a Copy-friendly StoredValue so all derived closures are FnMut/Copy
-    let id_sv = StoredValue::new(comic.id.clone());
-    let title = comic.title.clone();
-
-    // Load cover once on mount
-    spawn_local(async move {
-        let id = id_sv.get_value();
-        if ctx.cover_cache.with_untracked(|c| c.contains_key(&id)) {
-            return;
-        }
-        if let Ok(Some(data_uri)) = invoke::get_cover(&id).await {
-            ctx.cover_cache.update(|c| { c.insert(id, data_uri); });
-        }
-    });
-
-    let cover_uri    = move || ctx.cover_cache.with(|c| c.get(&id_sv.get_value()).cloned());
-    let is_selected  = move || ctx.selected_comics.with(|s| s.contains(&id_sv.get_value()));
-    let has_selection = move || ctx.selected_comics.with(|s| !s.is_empty());
-
-    // Click: toggle selection when any are selected; navigate otherwise
-    let on_click = move |_| {
-        if has_selection() {
-            let id = id_sv.get_value();
-            ctx.selected_comics.update(|s| {
-                if s.contains(&id) { s.remove(&id); } else { s.insert(id); }
-            });
-        } else {
-            navigate(&format!("/read/{}", id_sv.get_value()), Default::default());
-        }
+    let id = StoredValue::new(comic.id.clone());
+    let title = StoredValue::new(comic.title.clone());
+    let is_selected = move || ctx.selected_comics.with(|s| s.contains(&id.get_value()));
+    let cloud = comic.id.starts_with("drive-") && !comic.downloaded;
+    let available = comic.downloaded || cloud;
+    let availability = if comic.downloaded {
+        "Available offline"
+    } else if cloud {
+        "On Google Drive"
+    } else {
+        "File unavailable"
     };
-
-    // Right-click: bulk actions if this card is selected, single actions otherwise
-    let on_contextmenu = move |e: leptos::ev::MouseEvent| {
+    let action = if cloud {
+        "Download & read"
+    } else if comic.downloaded {
+        "Read"
+    } else {
+        "Unavailable"
+    };
+    let href = format!("/read/{}", comic.id);
+    let open_menu = move |e: leptos::ev::MouseEvent| {
         e.prevent_default();
-        let target = if ctx.selected_comics.with(|s| s.contains(&id_sv.get_value())) {
-            ContextMenuTarget::MultiSelect { ids: ctx.selected_comics.get().into_iter().collect() }
+        let target = if is_selected() {
+            ContextMenuTarget::MultiSelect {
+                ids: ctx.selected_comics.get_untracked().into_iter().collect(),
+            }
         } else {
-            ContextMenuTarget::Comic { id: id_sv.get_value() }
+            ContextMenuTarget::Comic { id: id.get_value() }
         };
         ctx.context_menu.set(Some(ContextMenuState {
             x: e.client_x() as f64,
@@ -58,32 +44,71 @@ pub fn ComicCard(comic: ComicBook) -> impl IntoView {
     };
 
     view! {
-        <div
-            class=move || if is_selected() { "comic-card selected" } else { "comic-card" }
-            on:click=on_click
-            on:contextmenu=on_contextmenu
-        >
-            <div class="comic-cover">
-                {move || match cover_uri() {
-                    Some(uri) => view! {
-                        <img src=uri alt=title.clone() class="cover-img" loading="lazy" />
-                    }.into_any(),
-                    None => view! {
-                        <div class="cover-placeholder">
-                            <span class="placeholder-icon">"📖"</span>
-                        </div>
-                    }.into_any(),
-                }}
-                // Checkmark overlay — visible when any selection is active
-                {move || has_selection().then(|| view! {
-                    <div class=move || if is_selected() { "select-check checked" } else { "select-check" }>
-                        {move || is_selected().then_some("✓")}
-                    </div>
-                })}
+        <article class="book-row" class:selected=is_selected on:contextmenu=open_menu>
+            <input class="book-select" type="checkbox" aria-label=format!("Select {}", comic.title)
+                prop:checked=is_selected on:change=move |e| {
+                    let checked = event_target_checked(&e);
+                    ctx.selected_comics.update(|selected| {
+                        if checked { selected.insert(id.get_value()); } else { selected.remove(&id.get_value()); }
+                    });
+                } />
+            <span class="book-file-icon" aria-hidden="true">{format!("{:?}", comic.format).to_uppercase()}</span>
+            <div class="book-row-info">
+                <a class="book-name" href=href.clone() title=title.get_value()
+                    on:click=move |e| if !available { e.prevent_default(); }>{comic.title}</a>
+                <div class="book-row-meta">
+                    <span>{comic.series}</span>
+                    <span class="availability-label" class:offline=comic.downloaded>{availability}</span>
+                </div>
             </div>
-            <div class="comic-info">
-                <p class="comic-title">{comic.title.clone()}</p>
-                <p class="comic-format">{format!("{:?}", comic.format).to_uppercase()}</p>
+            <a class="book-read-action" class:unavailable=!available aria-disabled=(!available).to_string()
+                href=href on:click=move |e| if !available { e.prevent_default(); }
+                aria-label=format!("{action}: {}", title.get_value())>{action}<span aria-hidden="true">" →"</span></a>
+            <button class="icon-button book-more" aria-label=format!("Actions for {}", title.get_value()) on:click=open_menu>"⋯"</button>
+        </article>
+    }
+}
+
+#[component]
+pub fn BookList(comics: Memo<Vec<ComicBook>>) -> impl IntoView {
+    let ctx = use_context::<AppContext>().unwrap();
+    let selected_count = move || ctx.selected_comics.with(|s| s.len());
+    let all_selected = move || {
+        comics.with(|books| {
+            !books.is_empty()
+                && ctx
+                    .selected_comics
+                    .with(|s| books.iter().all(|b| s.contains(&b.id)))
+        })
+    };
+    view! {
+        <div class="book-list-container">
+            <Show when=move || comics.with(|books| !books.is_empty())>
+                <div class="book-list-tools">
+                    <label><input type="checkbox" prop:checked=all_selected aria-label="Select all visible books"
+                        on:change=move |e| {
+                            let checked = event_target_checked(&e);
+                            ctx.selected_comics.update(|selected| {
+                                for book in comics.get_untracked() {
+                                    if checked { selected.insert(book.id); } else { selected.remove(&book.id); }
+                                }
+                            });
+                        } />"Select all"</label>
+                    <Show when=move || { selected_count() > 0 } fallback=|| view! { <span>"In reading order"</span> }>
+                        <span>{move || format!("{} selected", selected_count())}</span>
+                        <button class="text-button" on:click=move |_| ctx.selected_comics.update(|s| s.clear())>"Clear selection"</button>
+                        <button class="btn-secondary" on:click=move |e: leptos::ev::MouseEvent| ctx.context_menu.set(Some(ContextMenuState {
+                            x: e.client_x() as f64, y: e.client_y() as f64,
+                            target: ContextMenuTarget::MultiSelect { ids: ctx.selected_comics.get_untracked().into_iter().collect() },
+                        }))>"Selection actions"</button>
+                    </Show>
+                </div>
+            </Show>
+            <Show when=move || comics.with(Vec::is_empty)><super::empty_state::NoResults /></Show>
+            <div class="book-list">
+                <For each=move || comics.get()
+                    key=|c| (c.id.clone(), c.title.clone(), c.series.clone(), c.downloaded)
+                    children=move |comic| view! { <ComicCard comic=comic /> } />
             </div>
         </div>
     }

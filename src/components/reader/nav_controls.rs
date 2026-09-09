@@ -8,7 +8,7 @@ pub fn NavControls(reader: ReaderState, advance: Callback<bool>) -> impl IntoVie
     let forward_is_right = move || !reader.rtl.get();
 
     view! {
-        <div class="nav-zones">
+        <div class="nav-zones" class:hidden=move || reader.page_data.with(|page| page.is_none())>
             <div
                 class="nav-zone nav-zone-left"
                 on:click=move |_| advance.run(!forward_is_right())

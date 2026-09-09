@@ -1,4 +1,5 @@
 use serde::Serialize;
+use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::types::*;
@@ -124,4 +125,62 @@ pub async fn delete_comic_file(comic_id: &str) -> Result<(), String> {
         comic_id: &'a str,
     }
     call("delete_comic_file", &Args { comic_id }).await
+}
+
+pub async fn get_drive_status() -> Result<DriveStatus, String> {
+    call("get_drive_status", &()).await
+}
+
+pub async fn connect_drive(folder: &str) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct Args<'a> { folder: &'a str }
+    call("connect_drive", &Args { folder }).await
+}
+
+pub async fn sync_drive() -> Result<(), String> {
+    call("sync_drive", &()).await
+}
+
+pub async fn cancel_drive_operation() -> Result<(), String> {
+    call("cancel_drive_operation", &()).await
+}
+
+pub async fn disconnect_drive() -> Result<(), String> {
+    call("disconnect_drive", &()).await
+}
+
+pub async fn set_drive_auto_sync(enabled: bool) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct Args { enabled: bool }
+    call("set_drive_auto_sync", &Args { enabled }).await
+}
+
+pub async fn set_drive_sync_mode(mode: DriveSyncMode) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct Args { mode: DriveSyncMode }
+    call("set_drive_sync_mode", &Args { mode }).await
+}
+
+pub async fn refresh_drive_status(ctx: crate::state::AppContext) {
+    if let Ok(mut status) = get_drive_status().await {
+        let previous_revision = ctx.drive_status.get_untracked().revision;
+        if status.revision != previous_revision {
+            if let Ok(comics) = get_library().await {
+                // Keep unchanged covers mounted; revised archives get fresh covers.
+                let new_paths: std::collections::HashMap<_, _> = comics.iter().map(|c| (c.id.as_str(), c.path.as_str())).collect();
+                ctx.cover_cache.update(|cache| {
+                    ctx.library.with_untracked(|old| {
+                        let old_paths: std::collections::HashMap<_, _> = old.iter().map(|c| (c.id.as_str(), c.path.as_str())).collect();
+                        cache.retain(|id, _| {
+                            matches!((old_paths.get(id.as_str()), new_paths.get(id.as_str())), (Some(a), Some(b)) if a == b)
+                        });
+                    });
+                });
+                ctx.library.set(comics);
+            } else {
+                status.revision = previous_revision; // Retry the snapshot on the next poll.
+            }
+        }
+        ctx.drive_status.set(status);
+    }
 }

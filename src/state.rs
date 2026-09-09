@@ -10,6 +10,32 @@ pub enum ViewMode {
     Shelves,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Availability {
+    #[default]
+    All,
+    Offline,
+    Cloud,
+}
+
+impl Availability {
+    pub fn matches(self, comic: &ComicBook) -> bool {
+        match self {
+            Self::All => true,
+            Self::Offline => comic.downloaded,
+            Self::Cloud => !comic.downloaded && comic.id.starts_with("drive-"),
+        }
+    }
+}
+
+pub fn matches_search(comic: &ComicBook, query: &str, availability: Availability) -> bool {
+    let query = query.trim().to_lowercase();
+    availability.matches(comic)
+        && (query.is_empty()
+            || comic.title.to_lowercase().contains(&query)
+            || comic.series.to_lowercase().contains(&query))
+}
+
 #[derive(Clone)]
 pub enum ContextMenuTarget {
     Comic { id: String },
@@ -26,6 +52,8 @@ pub struct ContextMenuState {
 
 #[derive(Clone, Copy)]
 pub struct AppContext {
+    pub drive_status: RwSignal<crate::types::DriveStatus>,
+    pub drive_panel_open: RwSignal<bool>,
     pub library: RwSignal<Vec<ComicBook>>,
     pub current_directory: RwSignal<Option<String>>,
     pub cover_cache: RwSignal<HashMap<String, String>>,
@@ -35,12 +63,17 @@ pub struct AppContext {
     pub selected_series: RwSignal<Option<String>>,
     pub context_menu: RwSignal<Option<ContextMenuState>>,
     pub search_query: RwSignal<String>,
+    pub series_query: RwSignal<String>,
+    pub availability: RwSignal<Availability>,
+    pub last_opened: RwSignal<Option<String>>,
     pub selected_comics: RwSignal<HashSet<String>>,
 }
 
 impl AppContext {
     pub fn new() -> Self {
         AppContext {
+            drive_status: RwSignal::new(crate::types::DriveStatus::default()),
+            drive_panel_open: RwSignal::new(false),
             library: RwSignal::new(Vec::new()),
             current_directory: RwSignal::new(load_saved_directory()),
             cover_cache: RwSignal::new(HashMap::new()),
@@ -50,6 +83,9 @@ impl AppContext {
             selected_series: RwSignal::new(None),
             context_menu: RwSignal::new(None),
             search_query: RwSignal::new(String::new()),
+            series_query: RwSignal::new(String::new()),
+            availability: RwSignal::new(Availability::All),
+            last_opened: RwSignal::new(load_setting("last_opened_book")),
             selected_comics: RwSignal::new(HashSet::new()),
         }
     }
@@ -88,7 +124,8 @@ pub fn save_rtl(series: &str, rtl: bool) {
 
 /// The neighbouring chapter within the same series, in reading order.
 pub fn sibling_chapter(ctx: AppContext, comic_id: &str, offset: isize) -> Option<String> {
-    ctx.library.with_untracked(|lib| sibling_in(lib, comic_id, offset))
+    ctx.library
+        .with_untracked(|lib| sibling_in(lib, comic_id, offset))
 }
 
 /// The library arrives sorted by (series, title), so the entry either side of
@@ -112,6 +149,7 @@ mod tests {
             series: series.into(),
             format: ComicFormat::Cbz,
             page_count: None,
+            downloaded: true,
         }
     }
 
@@ -150,5 +188,30 @@ mod tests {
     fn unknown_comic_has_no_siblings() {
         assert_eq!(sibling_in(&library(), "nope", 1), None);
         assert_eq!(sibling_in(&[], "s1", 1), None);
+    }
+
+    #[test]
+    fn offline_and_cloud_filters_handle_downloads_and_missing_local_files() {
+        let mut cloud = comic("Saga", "drive-cloud");
+        cloud.downloaded = false;
+        let downloaded = comic("Saga", "drive-offline");
+        let mut missing = comic("Saga", "missing-local");
+        missing.downloaded = false;
+        assert!(matches_search(&cloud, " SAGA ", Availability::Cloud));
+        assert!(!matches_search(&cloud, "Saga", Availability::Offline));
+        assert!(matches_search(
+            &downloaded,
+            "OFFLINE",
+            Availability::Offline
+        ));
+        assert!(!matches_search(&downloaded, "", Availability::Cloud));
+        assert!(!matches_search(&missing, "", Availability::Cloud));
+        assert!(!matches_search(&missing, "", Availability::Offline));
+        assert!(matches_search(&missing, "", Availability::All));
+        assert!(!matches_search(
+            &downloaded,
+            "Batman",
+            Availability::Offline
+        ));
     }
 }

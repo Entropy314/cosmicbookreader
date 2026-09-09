@@ -1,68 +1,61 @@
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-
 use crate::invoke;
 use crate::state::{AppContext, ContextMenuTarget};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 #[component]
 pub fn ContextMenu() -> impl IntoView {
     let ctx = use_context::<AppContext>().unwrap();
-
-    // Close on any click/contextmenu on the backdrop
     let close = move |_| ctx.context_menu.set(None);
+    let keyboard = window_event_listener(leptos::ev::keydown, move |e| {
+        if e.key() == "Escape" {
+            ctx.context_menu.set(None);
+        }
+    });
+    on_cleanup(move || keyboard.remove());
 
     view! {
         {move || ctx.context_menu.get().map(|menu| {
-            let (ids, remove_label, delete_label) = match menu.target {
-                ContextMenuTarget::Comic { id } => (
-                    vec![id],
-                    "Remove from Library".to_string(),
-                    "Delete File".to_string(),
-                ),
-                ContextMenuTarget::Series { ids } => (
-                    ids,
-                    "Remove Series from Library".to_string(),
-                    "Delete All Files".to_string(),
-                ),
-                ContextMenuTarget::MultiSelect { ids } => {
-                    let n = ids.len();
-                    (ids, format!("Remove {n} from Library"), format!("Delete {n} Files"))
-                }
+            let ids = match menu.target {
+                ContextMenuTarget::Comic { id } => vec![id],
+                ContextMenuTarget::Series { ids } | ContextMenuTarget::MultiSelect { ids } => ids,
             };
-
-            // Both menu items do the same thing; only the backend call differs.
+            let delete_ids: Vec<String> = ctx.library.with_untracked(|books| books.iter()
+                .filter(|book| ids.contains(&book.id) && book.downloaded).map(|book| book.id.clone()).collect());
+            let count = ids.len();
+            let delete_count = delete_ids.len();
             let act = move |ids: Vec<String>, delete_file: bool| {
+                if delete_file && !window().confirm_with_message(&format!("Delete {} local file(s) from this computer? This cannot be undone. Google Drive originals are kept.", ids.len())).unwrap_or(false) { return; }
                 ctx.context_menu.set(None);
                 ctx.selected_comics.update(|s| s.clear());
                 spawn_local(async move {
-                    for id in &ids {
-                        let _ = if delete_file {
-                            invoke::delete_comic_file(id).await
-                        } else {
-                            invoke::remove_comic(id).await
-                        };
+                    let mut removed = Vec::new();
+                    let mut errors = Vec::new();
+                    for id in ids {
+                        let result = if delete_file { invoke::delete_comic_file(&id).await } else { invoke::remove_comic(&id).await };
+                        match result { Ok(()) => removed.push(id), Err(error) => errors.push(error) }
                     }
-                    ctx.library.update(|l| l.retain(|c| !ids.contains(&c.id)));
-                    ctx.cover_cache.update(|c| c.retain(|k, _| !ids.contains(k)));
+                    ctx.library.update(|books| books.retain(|c| !removed.contains(&c.id)));
+                    ctx.cover_cache.update(|covers| covers.retain(|id, _| !removed.contains(id)));
+                    if !errors.is_empty() { ctx.error_message.set(Some(format!("Some books could not be updated: {}", errors.join("; ")))); }
+                    if let Some(series) = ctx.selected_series.get_untracked() {
+                        if !ctx.library.with_untracked(|books| books.iter().any(|c| c.series == series)) { ctx.selected_series.set(None); }
+                    }
                 });
             };
-            let remove_ids = ids.clone();
-
             view! {
-                // Invisible backdrop to catch outside clicks
                 <div class="ctx-backdrop" on:click=close on:contextmenu=close />
-                <div
-                    class="context-menu"
-                    style=format!("left: {}px; top: {}px;", menu.x, menu.y)
-                    on:click=|e| e.stop_propagation()
-                    on:contextmenu=|e| e.prevent_default()
-                >
-                    <button class="ctx-item" on:click=move |_| act(remove_ids.clone(), false)>
-                        {remove_label}
+                <div class="context-menu" role="group" aria-label="Book actions"
+                    style=format!("left: clamp(8px, {}px, calc(100vw - 250px)); top: clamp(8px, {}px, calc(100dvh - 180px));", menu.x, menu.y)
+                    on:click=|e| e.stop_propagation() on:contextmenu=|e| e.prevent_default()>
+                    <button class="ctx-item" on:click=move |_| act(ids.clone(), false)>
+                        {if count == 1 { "Remove from library".into() } else { format!("Remove {count} books from library") }}
                     </button>
-                    <button class="ctx-item ctx-item-danger" on:click=move |_| act(ids.clone(), true)>
-                        {delete_label}
+                    <button class="ctx-item ctx-item-danger" disabled=move || delete_count == 0 on:click=move |_| act(delete_ids.clone(), true)>
+                        {if delete_count <= 1 { "Delete local file".into() } else { format!("Delete {delete_count} local files") }}
                     </button>
+                    <p class="context-note">"Drive originals stay on Google Drive."</p>
+                    <button class="ctx-item" on:click=close>"Close"</button>
                 </div>
             }
         })}

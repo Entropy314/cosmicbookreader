@@ -12,6 +12,10 @@ pub async fn get_cover(
     comic_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
+    cover_for_comic(comic_id, &state).await
+}
+
+pub(crate) async fn cover_for_comic(comic_id: String, state: &AppState) -> Result<Option<String>, String> {
     // Get comic info from library
     let comic = {
         let library = state.library.read().await;
@@ -32,6 +36,11 @@ pub async fn get_cover(
         if let Some(thumb_bytes) = cache.get_thumb(&id, mtime) {
             return Ok(Some(bytes_to_data_uri(&thumb_bytes)));
         }
+    }
+
+    // Browsing an indexed collection must never fetch comic archives.
+    if crate::drive::is_drive_comic(&comic.id) && !crate::drive::locally_available(&comic).await {
+        return Ok(None);
     }
 
     // Generate thumbnail in blocking task
@@ -60,4 +69,3 @@ pub async fn get_cover(
 
     Ok(Some(bytes_to_data_uri(&thumb_bytes)))
 }
-

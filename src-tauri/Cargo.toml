@@ -16,6 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -33,7 +35,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 pdfium-render = { version = "0.8", features = ["sync"] }
 
 # Async runtime
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["rt", "sync", "net", "time", "io-util", "fs", "macros"] }
 
 # Thumbnail cache
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -44,5 +46,14 @@ walkdir = "2"
 base64 = { version = "0.22", features = ["std"] }
 anyhow = "1"
 natord = "1"
+regex = "1"
 unrar-ng = "0.7.7"
 
+# Google Drive: native OAuth, streaming downloads, and OS credential storage.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
+rand = "0.8"
+open = "5"
+tempfile = "3"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }

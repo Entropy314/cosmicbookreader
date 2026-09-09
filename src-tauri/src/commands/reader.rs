@@ -11,6 +11,7 @@ pub async fn open_comic(
     comic_id: String,
     state: State<'_, AppState>,
 ) -> Result<OpenComicResult, String> {
+    let request = state.reader_request.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let comic = {
         let library = state.library.read().await;
         library
@@ -19,6 +20,7 @@ pub async fn open_comic(
             .ok_or_else(|| format!("Comic '{}' not found in library", comic_id))?
     };
 
+    let comic = crate::drive::ensure_downloaded(&state, comic).await?;
     let path = comic.path.clone();
     let id = comic_id.clone();
 
@@ -59,6 +61,9 @@ pub async fn open_comic(
     // Store as active reader
     {
         let mut reader = state.active_reader.lock().await;
+        if state.reader_request.load(std::sync::atomic::Ordering::SeqCst) != request {
+            return Err("Another comic was opened while this one was loading.".into());
+        }
         *reader = Some(ActiveReader { comic_id: id, archive, page_count });
     }
 
