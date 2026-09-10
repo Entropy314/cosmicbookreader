@@ -30,7 +30,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/bin
-            src-tauri/target
+            target
           key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install trunk and tauri-cli
@@ -49,6 +49,6 @@ jobs:
         with:
           name: cosmicbookreader-windows
           path: |
-            src-tauri/target/release/cosmicbookreader.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+            target/release/cosmicbookreader.exe
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
