@@ -37,6 +37,7 @@
     ],
     "resources": [
       "lib/libpdfium.dylib",
+      "lib/pdfium.dll",
       "lib/LICENSE-pdfium.txt"
     ]
   }

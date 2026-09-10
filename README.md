@@ -36,10 +36,11 @@ shipped into the app bundle's resources. At runtime the loader looks beside the
 executable, in `lib/`, and in the macOS `Resources` directory before falling
 back to a system install.
 
-The checked-in binary is macOS arm64. Building for another platform means
-dropping that platform's `libpdfium` into `src-tauri/lib/`. If it is missing,
-PDFs fail to open with an error naming the expected file and directory, and
-every other format keeps working.
+macOS arm64 (`libpdfium.dylib`) and Windows x64 (`pdfium.dll`) binaries are
+checked in. Building for another platform means dropping that platform's
+`libpdfium` into `src-tauri/lib/`. If it is missing, PDFs fail to open with
+an error naming the expected file and directory, and every other format
+keeps working.
 
 RAR support uses the UnRAR source, which permits decompression but forbids
 using it to recreate the RAR compression algorithm.
