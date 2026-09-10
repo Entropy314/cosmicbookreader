@@ -35,15 +35,12 @@ jobs:
 
       - name: Install trunk and tauri-cli
         shell: bash
-        # ponytail: crates.io fetches occasionally flake on the Windows
-        # runner; a couple of retries clears it without hand-rolled polling.
+        # The cache above restores ~/.cargo/bin on a hit, and `cargo install`
+        # refuses to overwrite an existing binary without --force - so skip
+        # the (re)install entirely once both are already on PATH.
         run: |
-          for i in 1 2 3; do
-            cargo install trunk tauri-cli --locked && exit 0
-            echo "install failed (attempt $i/3), retrying in 10s..."
-            sleep 10
-          done
-          exit 1
+          command -v trunk >/dev/null && command -v cargo-tauri >/dev/null \
+            || cargo install trunk tauri-cli --locked
 
       - name: Build
         run: cargo tauri build
