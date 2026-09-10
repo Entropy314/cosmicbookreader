@@ -34,7 +34,16 @@ jobs:
           key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install trunk and tauri-cli
-        run: cargo install trunk tauri-cli --locked
+        shell: bash
+        # ponytail: crates.io fetches occasionally flake on the Windows
+        # runner; a couple of retries clears it without hand-rolled polling.
+        run: |
+          for i in 1 2 3; do
+            cargo install trunk tauri-cli --locked && exit 0
+            echo "install failed (attempt $i/3), retrying in 10s..."
+            sleep 10
+          done
+          exit 1
 
       - name: Build
         run: cargo tauri build
