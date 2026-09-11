@@ -42,6 +42,15 @@ jobs:
           command -v trunk >/dev/null && command -v cargo-tauri >/dev/null \
             || cargo install trunk tauri-cli --locked
 
+      - name: Configure Google Drive OAuth client
+        if: ${{ secrets.GOOGLE_DRIVE_CLIENT_JSON != '' }}
+        shell: bash
+        env:
+          DRIVE_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_CLIENT_JSON }}
+        run: |
+          printf '%s' "$DRIVE_CLIENT_JSON" > "$RUNNER_TEMP/google-drive-client.json"
+          echo "COSMIC_GOOGLE_OAUTH_CLIENT_JSON=$RUNNER_TEMP/google-drive-client.json" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo tauri build
 
